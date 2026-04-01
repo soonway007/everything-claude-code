@@ -2,6 +2,12 @@
 name: database-migration
 description: Workflow command scaffold for database-migration in everything-claude-code.
 allowed_tools: ["Bash", "Read", "Write", "Grep", "Glob"]
+origin: ECC
+metadata:
+  version: "1.0"
+  rollback: "1.0"
+  observation: true
+  feedback: true
 ---
 
 # /database-migration

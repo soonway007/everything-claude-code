@@ -1,0 +1,71 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node tests/run-all.js)",
+      "Bash(node ./doctor.js)",
+      "Bash(npx doctor:*)",
+      "Bash(ls -la *.js)",
+      "Bash(node:*)",
+      "Bash(npx jest:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(npm install:*)",
+      "Bash(refreshenv)",
+      "Bash(powershell -Command \"Get-CimInstance -ClassName Win32_PageFileUsage | Select-Object AllocatedBaseSize, CurrentUsage, PeakUsage; Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object TotalPhysicalMemory\" 2>&1)",
+      "Bash(powershell -Command \"\n$cs = Get-CimInstance Win32_ComputerSystem\n$cs.AutomaticManagedPagefile = \\\\$false\nSet-CimInstance -CimInstance \\\\$cs\n\\\\$pf = Get-CimInstance Win32_PageFile\n\\\\$pf.InitialSize = 24576\n\\\\$pf.MaximumSize = 49152\nSet-CimInstance -CimInstance \\\\$pf\nWrite-Host 'Pagefile updated: Initial=24GB, Max=48GB'\n\" 2>&1)",
+      "Bash(powershell -ExecutionPolicy Bypass -File update-pagefile.ps1 2>&1)",
+      "Bash(wmic pagefileset:*)",
+      "Bash(wmic computersystem:*)",
+      "Bash(reg query:*)",
+      "Bash(powershell -Command \"Get-ItemProperty 'HKLM:\\\\SYSTEM\\\\CurrentControlSet\\\\Control\\\\Session Manager\\\\Memory Management' -Name PagingFiles\" 2>&1)",
+      "Bash(powershell -Command \"Set-ItemProperty 'HKLM:\\\\SYSTEM\\\\CurrentControlSet\\\\Control\\\\Session Manager\\\\Memory Management' -Name PagingFiles -Value 'C:\\\\pagefile.sys 24576 49152'\" 2>&1)"
+    ],
+    "deny": [
+      "Bash(rm -rf /)",
+      "Bash(rm -rf ~)",
+      "Bash(del /f /q *)",
+      "Bash(format *)",
+      "Bash(mkfs *)",
+      "Bash(dd if=*)",
+      "Bash(shred *)",
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Read(~/.kube/**)",
+      "Read(~/.gcp/**)",
+      "Read(**/.env*)",
+      "Read(**/id_rsa*)",
+      "Read(**/id_ed25519*)",
+      "Write(~/.ssh/**)",
+      "Write(~/.aws/**)",
+      "Write(~/.kube/**)",
+      "Write(~/.gcp/**)",
+      "Bash(curl * | bash)",
+      "Bash(wget * | bash)",
+      "Bash(ssh * *)",
+      "Bash(scp * *)",
+      "Bash(nc -*)",
+      "Bash(ncat *)",
+      "Bash(socat *)",
+      "Bash(sudo *)",
+      "Bash(chmod 777 *)",
+      "Bash(chmod +x *)",
+      "Bash(* > /dev/*)",
+      "Bash(* >> /dev/*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"pre:security-audit\" \"scripts/hooks/security-audit.js\" \"standard,strict\"",
+            "timeout": 10
+          }
+        ],
+        "description": "Audit tool calls for security issues: secrets detection, dangerous patterns"
+      }
+    ]
+  }
+}

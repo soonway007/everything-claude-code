@@ -41,12 +41,16 @@ function slugify(str) {
  */
 function commandExists(cmd) {
   try {
-    execSync(`which ${cmd}`, { stdio: 'ignore' });
+    const { spawnSync } = require('child_process');
+    spawnSync('which', [cmd], { stdio: 'ignore' });
     return true;
   } catch {
     return false;
   }
 }
+
+// Windows Calibre installation path
+const CALIBRE_DEBUG_PATH = 'C:\\Program Files\\Calibre2\\calibre-debug.exe';
 
 /**
  * Extract metadata from EPUB file using epub-metadata or pandoc
@@ -279,9 +283,16 @@ async function extract(filePath) {
  */
 async function extractCalibreMetadata(filePath) {
   try {
-    const output = execSync(`calibre-debug --metadata-file "${filePath}"`, {
+    // Use full path for Windows Calibre installation
+    const { spawnSync } = require('child_process');
+    const calibrePath = fs.existsSync(CALIBRE_DEBUG_PATH) ? CALIBRE_DEBUG_PATH : 'calibre-debug';
+    const result = spawnSync(calibrePath, ['--metadata-file', filePath], {
       encoding: 'utf8',
     });
+    if (result.error) {
+      throw new Error(result.error.message);
+    }
+    const output = result.stdout;
 
     // Parse calibre metadata output
     const lines = output.split('\n');
@@ -320,5 +331,4 @@ async function extractCalibreMetadata(filePath) {
 module.exports = {
   extract,
   slugify,
-  EbookCache,
 };

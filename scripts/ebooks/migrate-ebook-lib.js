@@ -23,8 +23,10 @@ const { extractImages, rewriteImageLinks } = require('../lib/ebook-images');
 const { organizeBook } = require('../lib/ebook-organizer');
 const { generateIndex } = require('../lib/ebook-indexer');
 
-// Supported ebook extensions
-const EBOOK_EXTENSIONS = ['.epub', '.pdf', '.mobi', '.azw3'];
+// Supported ebook extensions (ordered by processing complexity)
+const EBOOK_EXTENSIONS = ['.epub', '.pdf'];
+// Extensions that require Calibre (skip initially for faster processing)
+const CALIBRE_EXTENSIONS = ['.mobi', '.azw3'];
 
 /**
  * Log a message with timestamp
@@ -59,6 +61,7 @@ function findEbooks(dirPath, recursive = true) {
       results.push(...findEbooks(fullPath, true));
     } else if (entry.isFile()) {
       const ext = path.extname(entry.name).toLowerCase();
+      // Only process EPUB and PDF for initial migration
       if (EBOOK_EXTENSIONS.includes(ext)) {
         results.push(fullPath);
       }

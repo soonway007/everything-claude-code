@@ -56,7 +56,7 @@ publishedDate: 2020-01-01
 
 # Content`);
 
-    const content = generateIndexContent([bookPath], { vaultPath: TEST_VAULT });
+    const content = await generateIndexContent([bookPath], { vaultPath: TEST_VAULT });
     if (!content.includes('# Ebook Library Index')) throw new Error('Missing header');
     if (!content.includes('**Total Books**: 1')) throw new Error('Missing book count');
     if (!content.includes('**Genres**: 1')) throw new Error('Missing genre count');
@@ -75,7 +75,7 @@ genre: Genre
 
 Content`);
 
-    const content = generateIndexContent([bookPath]);
+    const content = await generateIndexContent([bookPath]);
     if (!content.includes('```dataview')) throw new Error('Missing dataview');
     if (!content.includes('TABLE title, author, genre, publishedDate')) {
       throw new Error('Missing dataview query');
@@ -106,7 +106,7 @@ genre: Non-Fiction
 
 `);
 
-    const content = generateIndexContent(
+    const content = await generateIndexContent(
       [
         path.join(fictionDir, 'Book1.md'),
         path.join(nonFictionDir, 'Book2.md'),
@@ -140,7 +140,7 @@ genre: Genre
 
 `);
 
-    const content = generateIndexContent(
+    const content = await generateIndexContent(
       [
         path.join(authorDir, 'Book1.md'),
         path.join(authorDir, 'Book2.md'),
@@ -159,7 +159,7 @@ genre: Genre
     const bookPath = path.join(booksDir, 'NoFrontmatter.md');
     fs.writeFileSync(bookPath, '# Just a header\n\nContent without frontmatter');
 
-    const content = generateIndexContent([bookPath], { vaultPath: TEST_VAULT });
+    const content = await generateIndexContent([bookPath], { vaultPath: TEST_VAULT });
 
     if (!content.includes('NoFrontmatter')) throw new Error('Missing book title');
     if (!content.includes('**Total Books**: 1')) throw new Error('Missing book count');

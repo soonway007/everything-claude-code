@@ -4,8 +4,9 @@
  */
 
 const fs = require('fs');
+const fsPromises = require('fs').promises;
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { spawnSync, spawn } = require('child_process');
 
 /**
  * @typedef {Object} ConversionResult
@@ -50,21 +51,35 @@ async function epubToHtml(filePath) {
     throw new Error('Pandoc is not installed. Please install Pandoc to process EPUB files.');
   }
 
-  try {
-    const result = spawnSync('pandoc', ['-f', 'epub', '-t', 'html', filePath], {
+  return new Promise((resolve, reject) => {
+    const proc = spawn('pandoc', ['-f', 'epub', '-t', 'html', filePath], {
       encoding: 'utf8',
       maxBuffer: 50 * 1024 * 1024, // 50MB buffer
     });
-    if (result.error) {
-      throw new Error(`Pandoc conversion failed: ${result.error.message}`);
-    }
-    if (result.status !== 0) {
-      throw new Error(`Pandoc conversion failed with status ${result.status}: ${result.stderr}`);
-    }
-    return result.stdout;
-  } catch (error) {
-    throw new Error(`Pandoc conversion failed: ${error.message}`);
-  }
+
+    let stdout = '';
+    let stderr = '';
+
+    proc.stdout.on('data', (data) => {
+      stdout += data;
+    });
+
+    proc.stderr.on('data', (data) => {
+      stderr += data;
+    });
+
+    proc.on('error', (error) => {
+      reject(new Error(`Pandoc conversion failed: ${error.message}`));
+    });
+
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`Pandoc conversion failed with status ${code}: ${stderr}`));
+      } else {
+        resolve(stdout);
+      }
+    });
+  });
 }
 
 /**
@@ -121,47 +136,76 @@ async function convertViaCalibre(filePath, options) {
     throw new Error('ebook-convert (Calibre) is not installed. Please install Calibre to process MOBI/AZW3 files.');
   }
 
-  const tempDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'ebook-'));
+  const tempDir = await fsPromises.mkdtemp(path.join(require('os').tmpdir(), 'ebook-'));
   const htmlPath = path.join(tempDir, 'converted.html');
   let markdown = '';
 
   try {
     // Convert MOBI/AZW3 to HTML using Calibre's ebook-convert
-    const result = spawnSync(calibrePath, [filePath, htmlPath], {
-      encoding: 'utf8',
-      maxBuffer: 100 * 1024 * 1024, // 100MB buffer for large files
+    await new Promise((resolve, reject) => {
+      const proc = spawn(calibrePath, [filePath, htmlPath], {
+        encoding: 'utf8',
+        maxBuffer: 100 * 1024 * 1024, // 100MB buffer for large files
+      });
+
+      let stderr = '';
+      proc.stderr.on('data', (data) => {
+        stderr += data;
+      });
+
+      proc.on('error', (error) => {
+        reject(new Error(`Calibre conversion failed: ${error.message}`));
+      });
+
+      proc.on('close', (code) => {
+        if (code !== 0) {
+          reject(new Error(`Calibre conversion failed with status ${code}: ${stderr || ''}`));
+        } else {
+          resolve();
+        }
+      });
     });
-    if (result.error) {
-      throw new Error(`Calibre conversion failed: ${result.error.message}`);
-    }
-    if (result.status !== 0) {
-      throw new Error(`Calibre conversion failed with status ${result.status}: ${result.stderr || ''}`);
-    }
 
     // Check if conversion succeeded
-    if (!fs.existsSync(htmlPath)) {
+    try {
+      await fsPromises.access(htmlPath);
+    } catch {
       throw new Error('Calibre conversion failed - output file not created');
     }
 
     // Read the converted HTML
-    const html = fs.readFileSync(htmlPath, 'utf8');
+    const html = await fsPromises.readFile(htmlPath, 'utf8');
 
     // Convert HTML to Markdown using Pandoc
     if (commandExists('pandoc')) {
       // Write HTML to temp file to avoid command line length issues
       const htmlTempPath = path.join(tempDir, 'input.html');
-      fs.writeFileSync(htmlTempPath, html, 'utf8');
-      const mdResult = spawnSync('pandoc', ['-f', 'html', '-t', 'markdown', htmlTempPath], {
-        encoding: 'utf8',
-        maxBuffer: 50 * 1024 * 1024,
+      await fsPromises.writeFile(htmlTempPath, html, 'utf8');
+
+      // Use async pandoc conversion
+      markdown = await new Promise((resolve, reject) => {
+        const proc = spawn('pandoc', ['-f', 'html', '-t', 'markdown', htmlTempPath], {
+          encoding: 'utf8',
+          maxBuffer: 50 * 1024 * 1024,
+        });
+
+        let stdout = '';
+        let stderr = '';
+        proc.stdout.on('data', (data) => { stdout += data; });
+        proc.stderr.on('data', (data) => { stderr += data; });
+
+        proc.on('error', (error) => {
+          reject(new Error(`Pandoc conversion failed: ${error.message}`));
+        });
+
+        proc.on('close', (code) => {
+          if (code !== 0) {
+            reject(new Error(`Pandoc conversion failed with status ${code}: ${stderr || ''}`));
+          } else {
+            resolve(stdout);
+          }
+        });
       });
-      if (mdResult.error) {
-        throw new Error(`Pandoc conversion failed: ${mdResult.error.message}`);
-      }
-      if (mdResult.status !== 0) {
-        throw new Error(`Pandoc conversion failed with status ${mdResult.status}: ${mdResult.stderr || ''}`);
-      }
-      markdown = mdResult.stdout;
     } else {
       // Fallback: strip HTML tags manually
       markdown = html
@@ -179,8 +223,10 @@ async function convertViaCalibre(filePath, options) {
     };
   } catch (error) {
     // Clean up temp dir on error
-    if (tempDir && fs.existsSync(tempDir)) {
-      fs.rmSync(tempDir, { recursive: true, force: true });
+    try {
+      await fsPromises.rm(tempDir, { recursive: true, force: true });
+    } catch {
+      // Ignore cleanup errors
     }
     throw new Error(`Calibre conversion failed: ${error.message}`);
   }
@@ -196,7 +242,7 @@ async function convertViaPandoc(filePath, options) {
   const ext = path.extname(filePath).toLowerCase();
   let markdown = '';
   const images = [];
-  const tempDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'ebook-'));
+  const tempDir = await fsPromises.mkdtemp(path.join(require('os').tmpdir(), 'ebook-'));
 
   try {
     if (ext === '.epub') {
@@ -204,65 +250,90 @@ async function convertViaPandoc(filePath, options) {
       const html = await epubToHtml(filePath);
       // Write HTML to temp file to avoid command line length issues
       const htmlTempPath = path.join(tempDir, 'epub.html');
-      fs.writeFileSync(htmlTempPath, html, 'utf8');
+      await fsPromises.writeFile(htmlTempPath, html, 'utf8');
       // Then convert HTML to Markdown using Pandoc
-      const mdResult = spawnSync('pandoc', ['-f', 'html', '-t', 'markdown', htmlTempPath], {
-        encoding: 'utf8',
-        maxBuffer: 50 * 1024 * 1024,
+      markdown = await new Promise((resolve, reject) => {
+        const proc = spawn('pandoc', ['-f', 'html', '-t', 'markdown', htmlTempPath], {
+          encoding: 'utf8',
+          maxBuffer: 50 * 1024 * 1024,
+        });
+        let stdout = '';
+        let stderr = '';
+        proc.stdout.on('data', (data) => { stdout += data; });
+        proc.stderr.on('data', (data) => { stderr += data; });
+        proc.on('error', (error) => reject(new Error(`Pandoc conversion failed: ${error.message}`)));
+        proc.on('close', (code) => {
+          if (code !== 0) reject(new Error(`Pandoc conversion failed with status ${code}: ${stderr}`));
+          else resolve(stdout);
+        });
       });
-      if (mdResult.error) {
-        throw new Error(`Pandoc conversion failed: ${mdResult.error.message}`);
-      }
-      markdown = mdResult.stdout;
     } else if (ext === '.pdf') {
       // PDF to Markdown using Pandoc
-      const pdfResult = spawnSync('pandoc', ['-f', 'pdf', '-t', 'markdown', filePath], {
-        encoding: 'utf8',
-        maxBuffer: 50 * 1024 * 1024,
+      markdown = await new Promise((resolve, reject) => {
+        const proc = spawn('pandoc', ['-f', 'pdf', '-t', 'markdown', filePath], {
+          encoding: 'utf8',
+          maxBuffer: 50 * 1024 * 1024,
+        });
+        let stdout = '';
+        let stderr = '';
+        proc.stdout.on('data', (data) => { stdout += data; });
+        proc.stderr.on('data', (data) => { stderr += data; });
+        proc.on('error', (error) => reject(new Error(`Pandoc conversion failed: ${error.message}`)));
+        proc.on('close', (code) => {
+          if (code !== 0) reject(new Error(`Pandoc conversion failed with status ${code}: ${stderr}`));
+          else resolve(stdout);
+        });
       });
-      if (pdfResult.error) {
-        throw new Error(`Pandoc conversion failed: ${pdfResult.error.message}`);
-      }
-      if (pdfResult.status !== 0) {
-        throw new Error(`Pandoc conversion failed with status ${pdfResult.status}: ${pdfResult.stderr}`);
-      }
-      markdown = pdfResult.stdout;
     } else if (ext === '.mobi' || ext === '.azw3') {
       // For Kindle formats, try Calibre first if available
       if (fs.existsSync(CALIBRE_PATH) || commandExists('ebook-convert')) {
         return convertViaCalibre(filePath, options);
       }
       // Fallback: generic pandoc conversion
-      const mobiResult = spawnSync('pandoc', ['-t', 'markdown', filePath], {
-        encoding: 'utf8',
-        maxBuffer: 50 * 1024 * 1024,
+      markdown = await new Promise((resolve, reject) => {
+        const proc = spawn('pandoc', ['-t', 'markdown', filePath], {
+          encoding: 'utf8',
+          maxBuffer: 50 * 1024 * 1024,
+        });
+        let stdout = '';
+        proc.stdout.on('data', (data) => { stdout += data; });
+        proc.on('error', (error) => reject(new Error(`Pandoc conversion failed: ${error.message}`)));
+        proc.on('close', (code) => {
+          if (code !== 0) reject(new Error(`Pandoc conversion failed with status ${code}`));
+          else resolve(stdout);
+        });
       });
-      if (mobiResult.error) {
-        throw new Error(`Pandoc conversion failed: ${mobiResult.error.message}`);
-      }
-      markdown = mobiResult.stdout;
     } else {
       // Try generic conversion
-      const genResult = spawnSync('pandoc', ['-t', 'markdown', filePath], {
-        encoding: 'utf8',
-        maxBuffer: 50 * 1024 * 1024,
+      markdown = await new Promise((resolve, reject) => {
+        const proc = spawn('pandoc', ['-t', 'markdown', filePath], {
+          encoding: 'utf8',
+          maxBuffer: 50 * 1024 * 1024,
+        });
+        let stdout = '';
+        proc.stdout.on('data', (data) => { stdout += data; });
+        proc.on('error', (error) => reject(new Error(`Pandoc conversion failed: ${error.message}`)));
+        proc.on('close', (code) => {
+          if (code !== 0) reject(new Error(`Pandoc conversion failed with status ${code}`));
+          else resolve(stdout);
+        });
       });
-      if (genResult.error) {
-        throw new Error(`Pandoc conversion failed: ${genResult.error.message}`);
-      }
-      markdown = genResult.stdout;
     }
   } catch (error) {
     // Clean up temp dir on error
-    if (fs.existsSync(tempDir)) {
-      fs.rmSync(tempDir, { recursive: true, force: true });
+    try {
+      await fsPromises.rm(tempDir, { recursive: true, force: true });
+    } catch {
+      // Ignore cleanup errors
     }
     throw new Error(`Pandoc conversion failed: ${error.message}`);
   }
 
   // Clean up temp dir on success
-  if (fs.existsSync(tempDir)) {
-    fs.rmSync(tempDir, { recursive: true, force: true });
+  try {
+    await fsPromises.rm(tempDir, { recursive: true, force: true });
+  } catch {
+    // Ignore cleanup errors
   }
 
   return {

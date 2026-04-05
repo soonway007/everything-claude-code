@@ -50,14 +50,16 @@ async function extractImages(markdown, sourcePath, targetVault, metadata) {
 
   const extractedImages = [];
 
-  // Find base64 encoded images in markdown
+  // Find base64 encoded images in markdown using matchAll
   const base64ImagePattern = /!\[([^\]]*)\]\(data:image\/([^;]+);base64,([^)]+)\)/g;
-  let match;
+  const matches = [...markdown.matchAll(base64ImagePattern)];
   let processedMarkdown = markdown;
+  let imageIndex = 0;
 
-  while ((match = base64ImagePattern.exec(markdown)) !== null) {
+  for (const match of matches) {
     const [, altText, mimeType, base64Data] = match;
-    const filename = `image-${extractedImages.length + 1}.${getExtensionFromMime(mimeType)}`;
+    imageIndex += 1;
+    const filename = `image-${imageIndex}.${getExtensionFromMime(mimeType)}`;
     const imagePath = path.join(attachmentsDir, filename);
 
     try {
@@ -72,6 +74,12 @@ async function extractImages(markdown, sourcePath, targetVault, metadata) {
       processedMarkdown = processedMarkdown.replace(match[0], newImageRef);
     } catch (error) {
       console.warn(`Failed to extract image: ${error.message}`);
+    }
+
+    // Safety limit to prevent excessive processing
+    if (imageIndex >= 1000) {
+      console.warn('Image extraction limit reached (1000 images)');
+      break;
     }
   }
 

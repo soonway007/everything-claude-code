@@ -4,8 +4,10 @@
  */
 
 const fs = require('fs');
+const fsPromises = require('fs').promises;
 const path = require('path');
 const { execSync } = require('child_process');
+const { logger } = require('./ebook-logger');
 
 /**
  * @typedef {Object} EbookMetadata
@@ -21,6 +23,32 @@ const { execSync } = require('child_process');
  * @property {string} [description]
  * @property {string} sourcePath - Original file path
  */
+
+/**
+ * Date format patterns for normalization
+ * @typedef {Array<{pattern: RegExp, parse: (match: RegExpMatchArray) => string}>} DateFormatPatterns
+ */
+
+/**
+ * @type {DateFormatPatterns}
+ */
+const DATE_PATTERNS = [
+  {
+    // ISO format: YYYY-MM-DD
+    pattern: /^(\d{4})-(\d{2})-(\d{2})$/,
+    parse: (match) => match[0].substring(0, 10),
+  },
+  {
+    // US format: MM/DD/YYYY
+    pattern: /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/,
+    parse: (match) => `${match[3]}-${match[1].padStart(2, '0')}-${match[2].padStart(2, '0')}`,
+  },
+  {
+    // European format: DD.MM.YYYY
+    pattern: /^(\d{1,2})\.(\d{1,2})\.(\d{4})$/,
+    parse: (match) => `${match[3]}-${match[2].padStart(2, '0')}-${match[1].padStart(2, '0')}`,
+  },
+];
 
 /**
  * Normalize a string for use as a slug
@@ -53,6 +81,145 @@ function commandExists(cmd) {
 const CALIBRE_DEBUG_PATH = 'C:\\Program Files\\Calibre2\\calibre-debug.exe';
 
 /**
+ * Read EPUB container and extract OPF content
+ * @param {string} filePath - Path to the EPUB file
+ * @returns {Promise<{opfContent: string|null, opfPath: string|null}>}
+ */
+async function readEpubContainer(filePath) {
+  try {
+    const AdmZip = require('adm-zip');
+    const zip = new AdmZip(filePath);
+    const zipEntries = zip.getEntries();
+
+    for (const entry of zipEntries) {
+      if (entry.entryName.endsWith('.opf')) {
+        return {
+          opfContent: entry.getData().toString('utf8'),
+          opfPath: entry.entryName,
+        };
+      }
+    }
+
+    logger.warn(`No OPF file found in EPUB: ${filePath}`);
+    return { opfContent: null, opfPath: null };
+  } catch (error) {
+    logger.warn(`Could not read EPUB container from ${filePath}: ${error.message}`);
+    return { opfContent: null, opfPath: null };
+  }
+}
+
+/**
+ * Extract metadata content using a regex pattern
+ * @param {string} content - The OPF content to search
+ * @param {string} pattern - The regex pattern to match
+ * @returns {string|null} - The captured content or null if not found
+ */
+function getMetaContent(content, pattern) {
+  const match = content.match(new RegExp(pattern, 'i'));
+  return match ? (match[1] || match[2]) : null;
+}
+
+/**
+ * Extract title from OPF metadata
+ * @param {string} opfContent - OPF content
+ * @param {string} fallbackTitle - Fallback title if not found
+ * @returns {string}
+ */
+function extractTitle(opfContent, fallbackTitle) {
+  return (
+    getMetaContent(opfContent, '<dc:title[^>]*>([^<]+)<\\/dc:title>') ||
+    getMetaContent(opfContent, '<title>([^<]+)<\\/title>') ||
+    fallbackTitle
+  );
+}
+
+/**
+ * Extract author from OPF metadata
+ * @param {string} opfContent - OPF content
+ * @returns {string}
+ */
+function extractAuthor(opfContent) {
+  return (
+    getMetaContent(opfContent, '<dc:creator[^>]*>([^<]+)<\\/dc:creator>') ||
+    getMetaContent(opfContent, '<creator>([^<]+)<\\/creator>') ||
+    'Unknown'
+  );
+}
+
+/**
+ * Extract date from OPF metadata
+ * @param {string} opfContent - OPF content
+ * @returns {string|null}
+ */
+function extractDate(opfContent) {
+  const dateStr =
+    getMetaContent(opfContent, '<dc:date[^>]*>([^<]+)<\\/dc:date>') ||
+    getMetaContent(opfContent, '<date>([^<]+)<\\/date>');
+  return dateStr ? normalizeDate(dateStr) : null;
+}
+
+/**
+ * Extract language from OPF metadata
+ * @param {string} opfContent - OPF content
+ * @returns {string|null}
+ */
+function extractLanguage(opfContent) {
+  return (
+    getMetaContent(opfContent, '<dc:language[^>]*>([^<]+)<\\/dc:language>') ||
+    getMetaContent(opfContent, '<language>([^<]+)<\\/language>') ||
+    null
+  );
+}
+
+/**
+ * Extract publisher from OPF metadata
+ * @param {string} opfContent - OPF content
+ * @returns {string|null}
+ */
+function extractPublisher(opfContent) {
+  return (
+    getMetaContent(opfContent, '<dc:publisher[^>]*>([^<]+)<\\/dc:publisher>') ||
+    getMetaContent(opfContent, '<publisher>([^<]+)<\\/publisher>') ||
+    null
+  );
+}
+
+/**
+ * Extract description from OPF metadata
+ * @param {string} opfContent - OPF content
+ * @returns {string|null}
+ */
+function extractDescription(opfContent) {
+  return (
+    getMetaContent(opfContent, '<dc:description[^>]*>([^<]+)<\\/dc:description>') ||
+    getMetaContent(opfContent, '<description>([^<]+)<\\/description>') ||
+    null
+  );
+}
+
+/**
+ * Extract ISBN from OPF metadata
+ * @param {string} opfContent - OPF content
+ * @returns {string|null}
+ */
+function extractIsbn(opfContent) {
+  return getMetaContent(opfContent, '<dc:identifier[^>]*>([^<]+)<\\/dc:identifier>');
+}
+
+/**
+ * Extract genre from OPF metadata
+ * @param {string} opfContent - OPF content
+ * @returns {string}
+ */
+function extractGenre(opfContent) {
+  return (
+    getMetaContent(opfContent, '<meta[^>]*refine="genre"[^>]*content="([^"]+)"') ||
+    getMetaContent(opfContent, '<genre>([^<]+)<\\/genre>') ||
+    'Uncategorized'
+  );
+}
+
+/**
  * Extract metadata from EPUB file using epub-metadata or pandoc
  * @param {string} filePath
  * @returns {Promise<EbookMetadata>}
@@ -67,16 +234,13 @@ async function extractEpubMetadata(filePath) {
   };
 
   try {
-    // Try using epub-metadata npm package if available
-    // For now, fall back to parsing with basic XML extraction
-    const content = fs.readFileSync(filePath);
-
     // EPUB is a ZIP file - try to find metadata in container.xml and content.opf
-    // This is a simplified implementation
+    // Use adm-zip for async-friendly extraction
     const AdmZip = require('adm-zip');
     const zip = new AdmZip(filePath);
-    const zipEntries = zip.getEntries();
 
+    // getEntries() returns all entries without loading all data into memory at once
+    const zipEntries = zip.getEntries();
     let metadata = { ...defaultMetadata };
 
     for (const entry of zipEntries) {
@@ -89,7 +253,7 @@ async function extractEpubMetadata(filePath) {
 
     return metadata;
   } catch (error) {
-    console.warn(`Warning: Could not extract EPUB metadata from ${filePath}: ${error.message}`);
+    logger.warn(`Could not extract EPUB metadata from ${filePath}: ${error.message}`);
     return defaultMetadata;
   }
 }
@@ -101,46 +265,18 @@ async function extractEpubMetadata(filePath) {
  * @returns {EbookMetadata}
  */
 function parseOpfMetadata(opfContent, sourcePath) {
-  const getMetaContent = (pattern) => {
-    const match = opfContent.match(new RegExp(pattern, 'i'));
-    return match ? match[1] || match[2] : null;
-  };
-
-  const title = getMetaContent(/<dc:title[^>]*>([^<]+)<\/dc:title>/i)
-    || getMetaContent(/<title>([^<]+)<\/title>/i);
-
-  const creator = getMetaContent(/<dc:creator[^>]*>([^<]+)<\/dc:creator>/i)
-    || getMetaContent(/<creator>([^<]+)<\/creator>/i);
-
-  const date = getMetaContent(/<dc:date[^>]*>([^<]+)<\/dc:date>/i)
-    || getMetaContent(/<date>([^<]+)<\/date>/i);
-
-  const language = getMetaContent(/<dc:language[^>]*>([^<]+)<\/dc:language>/i)
-    || getMetaContent(/<language>([^<]+)<\/language>/i);
-
-  const publisher = getMetaContent(/<dc:publisher[^>]*>([^<]+)<\/dc:publisher>/i)
-    || getMetaContent(/<publisher>([^<]+)<\/publisher>/i);
-
-  const description = getMetaContent(/<dc:description[^>]*>([^<]+)<\/dc:description>/i)
-    || getMetaContent(/<description>([^<]+)<\/description>/i);
-
-  const isbn = getMetaContent(/<dc:identifier[^>]*>([^<]+)<\/dc:identifier>/i);
-
-  // Try to extract genre from package metadata
-  const genre = getMetaContent(/<meta[^>]*refine="genre"[^>]*content="([^"]+)"/i)
-    || getMetaContent(/<genre>([^<]+)<\/genre>/i)
-    || 'Uncategorized';
+  const fallbackTitle = path.basename(sourcePath, path.extname(sourcePath));
 
   return {
-    title: title || path.basename(sourcePath, path.extname(sourcePath)),
-    author: creator || 'Unknown',
-    genre: genre || 'Uncategorized',
+    title: extractTitle(opfContent, fallbackTitle),
+    author: extractAuthor(opfContent),
+    genre: extractGenre(opfContent),
     tags: [],
-    publishedDate: date ? normalizeDate(date) : null,
-    language: language || null,
-    publisher: publisher || null,
-    description: description || null,
-    isbn: isbn || null,
+    publishedDate: extractDate(opfContent),
+    language: extractLanguage(opfContent),
+    publisher: extractPublisher(opfContent),
+    description: extractDescription(opfContent),
+    isbn: extractIsbn(opfContent),
     sourcePath: sourcePath,
   };
 }
@@ -161,7 +297,7 @@ async function extractPdfMetadata(filePath) {
 
   try {
     const pdfParse = require('pdf-parse');
-    const dataBuffer = fs.readFileSync(filePath);
+    const dataBuffer = await fsPromises.readFile(filePath);
     const data = await pdfParse(dataBuffer);
 
     // pdf-parse provides info dictionary
@@ -180,7 +316,7 @@ async function extractPdfMetadata(filePath) {
       sourcePath: filePath,
     };
   } catch (error) {
-    console.warn(`Warning: Could not extract PDF metadata from ${filePath}: ${error.message}`);
+    logger.warn(`Could not extract PDF metadata from ${filePath}: ${error.message}`);
     return defaultMetadata;
   }
 }
@@ -193,29 +329,10 @@ async function extractPdfMetadata(filePath) {
 function normalizeDate(dateStr) {
   if (!dateStr) return null;
 
-  // Try various date formats
-  const patterns = [
-    // ISO format
-    /^(\d{4})-(\d{2})-(\d{2})$/,
-    // US format
-    /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/,
-    // European format
-    /^(\d{1,2})\.(\d{1,2})\.(\d{4})$/,
-  ];
-
-  for (const pattern of patterns) {
+  for (const { pattern, parse } of DATE_PATTERNS) {
     const match = dateStr.match(pattern);
     if (match) {
-      // Return in ISO format YYYY-MM-DD
-      if (pattern === patterns[0]) {
-        return dateStr.substring(0, 10);
-      } else if (pattern === patterns[1]) {
-        // MM/DD/YYYY
-        return `${match[3]}-${match[1].padStart(2, '0')}-${match[2].padStart(2, '0')}`;
-      } else if (pattern === patterns[2]) {
-        // DD.MM.YYYY
-        return `${match[3]}-${match[2].padStart(2, '0')}-${match[1].padStart(2, '0')}`;
-      }
+      return parse(match);
     }
   }
 
@@ -331,4 +448,11 @@ async function extractCalibreMetadata(filePath) {
 module.exports = {
   extract,
   slugify,
+  commandExists,
+  normalizeDate,
+  normalizePdfDate,
+  parseOpfMetadata,
+  extractEpubMetadata,
+  extractPdfMetadata,
+  extractCalibreMetadata,
 };

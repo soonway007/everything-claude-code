@@ -148,7 +148,7 @@ genre: Science Fiction
   if (await test('should return empty array if no books directory', async () => {
     const emptyVault = path.join(os.tmpdir(), 'empty-vault-' + Date.now());
     fs.mkdirSync(emptyVault);
-    const books = listBooks(emptyVault);
+    const books = await listBooks(emptyVault);
     if (books.length !== 0) throw new Error(`Expected 0, got ${books.length}`);
   })) passed++; else failed++;
 
@@ -172,7 +172,7 @@ genre: Test Genre
 
 # Test`);
 
-    const books = listBooks(TEST_VAULT);
+    const books = await listBooks(TEST_VAULT);
     if (books.length !== 1) throw new Error(`Expected 1 book, got ${books.length}`);
     if (books[0].metadata.title !== 'Test Book') {
       throw new Error(`Expected "Test Book", got "${books[0].metadata.title}"`);

@@ -4,6 +4,7 @@
  */
 
 const fs = require('fs');
+const fsPromises = require('fs').promises;
 const path = require('path');
 
 /**
@@ -69,6 +70,38 @@ function uniqueFilename(filePath) {
 }
 
 /**
+ * Async version of uniqueFilename
+ * @param {string} filePath
+ * @returns {Promise<string>}
+ */
+async function uniqueFilenameAsync(filePath) {
+  try {
+    await fsPromises.access(filePath);
+  } catch {
+    return filePath;
+  }
+
+  const dir = path.dirname(filePath);
+  const ext = path.extname(filePath);
+  const base = path.basename(filePath, ext);
+  let counter = 1;
+
+  try {
+    while (true) {
+      const tryPath = path.join(dir, `${base}-${counter}${ext}`);
+      try {
+        await fsPromises.access(tryPath);
+        counter += 1;
+      } catch {
+        return tryPath;
+      }
+    }
+  } catch {
+    return filePath;
+  }
+}
+
+/**
  * Organize a converted ebook into the vault folder structure
  * Structure: {vault}/books/{Genre}/{Author}/{title}.md
  *
@@ -87,15 +120,15 @@ async function organizeBook(content, metadata, vaultPath) {
   const authorPath = path.join(genrePath, author);
 
   // Ensure directories exist
-  ensureDir(authorPath);
+  await fsPromises.mkdir(authorPath, { recursive: true });
 
   // Generate filename
   let filename = `${title}.md`;
   let destPath = path.join(authorPath, filename);
-  destPath = uniqueFilename(destPath);
+  destPath = await uniqueFilenameAsync(destPath);
 
   // Write the file
-  fs.writeFileSync(destPath, content, 'utf8');
+  await fsPromises.writeFile(destPath, content, 'utf8');
 
   return destPath;
 }
@@ -113,27 +146,29 @@ function getRelativePath(filePath, vaultPath) {
 /**
  * List all books in the vault
  * @param {string} vaultPath
- * @returns {Array<{path: string, metadata: Object}>}
+ * @returns {Promise<Array<{path: string, metadata: Object}>>}
  */
-function listBooks(vaultPath) {
+async function listBooks(vaultPath) {
   const booksDir = path.join(vaultPath, 'books');
   const books = [];
 
-  if (!fs.existsSync(booksDir)) {
+  try {
+    await fsPromises.access(booksDir);
+  } catch {
     return books;
   }
 
-  const processDir = (dir) => {
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
+  const processDir = async (dir) => {
+    const entries = await fsPromises.readdir(dir, { withFileTypes: true });
 
     for (const entry of entries) {
       const fullPath = path.join(dir, entry.name);
 
       if (entry.isDirectory()) {
-        processDir(fullPath);
+        await processDir(fullPath);
       } else if (entry.isFile() && entry.name.endsWith('.md')) {
         try {
-          const content = fs.readFileSync(fullPath, 'utf8');
+          const content = await fsPromises.readFile(fullPath, 'utf8');
           const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---\n/);
 
           let metadata = {};
@@ -158,7 +193,7 @@ function listBooks(vaultPath) {
     }
   };
 
-  processDir(booksDir);
+  await processDir(booksDir);
   return books;
 }
 
@@ -213,20 +248,22 @@ function getVaultStructure(vaultPath) {
 /**
  * Verify vault organization matches expected structure
  * @param {string} vaultPath
- * @returns {{ valid: boolean, issues: string[] }}
+ * @returns {Promise<{ valid: boolean, issues: string[] }>}
  */
-function verifyOrganization(vaultPath) {
+async function verifyOrganization(vaultPath) {
   const issues = [];
   const booksDir = path.join(vaultPath, 'books');
 
-  if (!fs.existsSync(booksDir)) {
+  try {
+    await fsPromises.access(booksDir);
+  } catch {
     issues.push('Books directory does not exist');
     return { valid: false, issues };
   }
 
-  const checkBookFile = (filePath) => {
+  const checkBookFile = async (filePath) => {
     try {
-      const content = fs.readFileSync(filePath, 'utf8');
+      const content = await fsPromises.readFile(filePath, 'utf8');
       const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---\n/);
 
       if (!frontmatterMatch) {
@@ -246,21 +283,21 @@ function verifyOrganization(vaultPath) {
     }
   };
 
-  const processDir = (dir) => {
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
+  const processDir = async (dir) => {
+    const entries = await fsPromises.readdir(dir, { withFileTypes: true });
 
     for (const entry of entries) {
       const fullPath = path.join(dir, entry.name);
 
       if (entry.isDirectory()) {
-        processDir(fullPath);
+        await processDir(fullPath);
       } else if (entry.isFile() && entry.name.endsWith('.md')) {
-        checkBookFile(fullPath);
+        await checkBookFile(fullPath);
       }
     }
   };
 
-  processDir(booksDir);
+  await processDir(booksDir);
 
   return {
     valid: issues.length === 0,
@@ -278,4 +315,5 @@ module.exports = {
   slugify,
   ensureDir,
   uniqueFilename,
+  uniqueFilenameAsync,
 };

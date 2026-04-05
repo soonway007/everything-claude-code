@@ -4,6 +4,7 @@
  */
 
 const fs = require('fs');
+const fsPromises = require('fs').promises;
 const path = require('path');
 
 /**
@@ -22,9 +23,9 @@ function slugify(str) {
  * Generate the master index.md content
  * @param {string[]} bookPaths - Array of processed book file paths
  * @param {Object} options - Generation options
- * @returns {string}
+ * @returns {Promise<string>}
  */
-function generateIndexContent(bookPaths, options = {}) {
+async function generateIndexContent(bookPaths, options = {}) {
   const {
     vaultPath = '.',
     includeDataviewQuery = true,
@@ -32,9 +33,10 @@ function generateIndexContent(bookPaths, options = {}) {
     includeAuthorSection = true,
   } = options;
 
-  const books = bookPaths.map((p) => {
+  // Read all book files in parallel
+  const books = await Promise.all(bookPaths.map(async (p) => {
     try {
-      const content = fs.readFileSync(p, 'utf8');
+      const content = await fsPromises.readFile(p, 'utf8');
       const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---\n/);
 
       if (!frontmatterMatch) {
@@ -68,7 +70,7 @@ function generateIndexContent(bookPaths, options = {}) {
         tags: [],
       };
     }
-  });
+  }));
 
   // Group books by genre
   const byGenre = {};
@@ -151,18 +153,20 @@ function generateIndexContent(bookPaths, options = {}) {
 
   // Recent additions
   content += '## Recent Additions\n\n';
-  const recentBooks = books
-    .filter((b) => b.path)
-    .sort((a, b) => {
-      // Sort by path modification time or published date
+  // Get file stats in parallel for recent additions
+  const booksWithStats = await Promise.all(
+    books.filter((b) => b.path).map(async (book) => {
       try {
-        const aTime = fs.statSync(a.path).mtime;
-        const bTime = fs.statSync(b.path).mtime;
-        return bTime - aTime;
+        const stat = await fsPromises.stat(book.path);
+        return { ...book, mtime: stat.mtime };
       } catch {
-        return 0;
+        return { ...book, mtime: new Date(0) };
       }
     })
+  );
+
+  const recentBooks = booksWithStats
+    .sort((a, b) => b.mtime - a.mtime)
     .slice(0, 10);
 
   for (const book of recentBooks) {
@@ -182,12 +186,12 @@ function generateIndexContent(bookPaths, options = {}) {
 async function generateIndex(vaultPath, processedBooks, options = {}) {
   const indexPath = path.join(vaultPath, 'index.md');
 
-  const content = generateIndexContent(processedBooks, {
+  const content = await generateIndexContent(processedBooks, {
     vaultPath,
     ...options,
   });
 
-  fs.writeFileSync(indexPath, content, 'utf8');
+  await fsPromises.writeFile(indexPath, content, 'utf8');
 }
 
 /**
@@ -199,14 +203,16 @@ async function generateIndex(vaultPath, processedBooks, options = {}) {
 async function addToIndex(vaultPath, bookPath, metadata) {
   const indexPath = path.join(vaultPath, 'index.md');
 
-  if (!fs.existsSync(indexPath)) {
+  try {
+    await fsPromises.access(indexPath);
+  } catch {
     // Generate new index if it doesn't exist
     await generateIndex(vaultPath, [bookPath]);
     return;
   }
 
   // Read existing index
-  const existingContent = fs.readFileSync(indexPath, 'utf8');
+  const existingContent = await fsPromises.readFile(indexPath, 'utf8');
 
   // Generate link entry
   const relPath = path.relative(vaultPath, bookPath).replace(/\\/g, '/');
@@ -226,7 +232,7 @@ async function addToIndex(vaultPath, bookPath, metadata) {
   }
 
   lines.splice(insertIndex, 0, linkEntry);
-  fs.writeFileSync(indexPath, lines.join('\n'), 'utf8');
+  await fsPromises.writeFile(indexPath, lines.join('\n'), 'utf8');
 }
 
 /**
@@ -237,16 +243,18 @@ async function addToIndex(vaultPath, bookPath, metadata) {
 async function removeFromIndex(vaultPath, bookPath) {
   const indexPath = path.join(vaultPath, 'index.md');
 
-  if (!fs.existsSync(indexPath)) {
+  try {
+    await fsPromises.access(indexPath);
+  } catch {
     return;
   }
 
-  const content = fs.readFileSync(indexPath, 'utf8');
+  const content = await fsPromises.readFile(indexPath, 'utf8');
   const relPath = path.relative(vaultPath, bookPath).replace(/\\/g, '/');
   const linkPattern = new RegExp(`\\[\\[${relPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\|[^\\]]+\\]\\][^\\n]*\\n?`, 'g');
 
   const updated = content.replace(linkPattern, '');
-  fs.writeFileSync(indexPath, updated, 'utf8');
+  await fsPromises.writeFile(indexPath, updated, 'utf8');
 }
 
 /**

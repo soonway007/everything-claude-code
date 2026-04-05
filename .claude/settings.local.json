@@ -66,6 +66,19 @@
         ],
         "description": "Audit tool calls for security issues: secrets detection, dangerous patterns"
       }
+    ],
+    "Stop": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"stop:session-end\" \"scripts/hooks/session-end.js\"",
+            "timeout": 30
+          }
+        ],
+        "description": "Session-end verification: persist session learnings and check for issues"
+      }
     ]
   }
 }
